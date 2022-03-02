@@ -47,7 +47,7 @@
 #include <queue>
 #include <utility>
 #include <vector>
-
+#include <iostream>
 #include "omp.h"
 
 #include "ripples/diffusion_simulation.h"
@@ -55,6 +55,7 @@
 #include "ripples/imm_execution_record.h"
 #include "ripples/utility.h"
 #include "ripples/streaming_rrr_generator.h"
+#include "ripples/huffman.h"
 
 #include "trng/uniform01_dist.hpp"
 #include "trng/uniform_int_dist.hpp"
@@ -93,26 +94,26 @@ using RRRsets = std::vector<RRRset<GraphTy>>;
 template <typename GraphTy, typename PRNGeneratorTy, typename diff_model_tag>
 void AddRRRSet(const GraphTy &G, typename GraphTy::vertex_type r,
                PRNGeneratorTy &generator, RRRset<GraphTy> &result,
-               diff_model_tag &&tag) {
+               diff_model_tag &&tag, const std::string& sortFlag) {
   using vertex_type = typename GraphTy::vertex_type;
 
   trng::uniform01_dist<float> value;
 
-  std::queue<vertex_type> queue;
+  // std::queue<vertex_type> queue;
+  std::deque<vertex_type> queue;
   std::vector<bool> visited(G.num_nodes(), false);
-
-  queue.push(r);
+  double vm1,vm2;
+  queue.push_front(r);
   visited[r] = true;
   result.push_back(r);
-
   while (!queue.empty()) {
     vertex_type v = queue.front();
-    queue.pop();
+    queue.pop_front();
 
     if (std::is_same<diff_model_tag, ripples::independent_cascade_tag>::value) {
       for (auto u : G.neighbors(v)) {
         if (!visited[u.vertex] && value(generator) <= u.weight) {
-          queue.push(u.vertex);
+          queue.push_front(u.vertex);
           visited[u.vertex] = true;
           result.push_back(u.vertex);
         }
@@ -126,7 +127,7 @@ void AddRRRSet(const GraphTy &G, typename GraphTy::vertex_type r,
         if (threshold > 0) continue;
 
         if (!visited[u.vertex]) {
-          queue.push(u.vertex);
+          queue.push_front(u.vertex);
           visited[u.vertex] = true;
           result.push_back(u.vertex);
         }
@@ -136,8 +137,13 @@ void AddRRRSet(const GraphTy &G, typename GraphTy::vertex_type r,
       throw;
     }
   }
-
-  std::stable_sort(result.begin(), result.end());
+  result.shrink_to_fit(); // try collect memory 
+  std::deque<vertex_type>().swap(queue);
+  std::vector<bool>().swap(visited);
+  if (sortFlag=="Y"){
+    std::stable_sort(result.begin(), result.end()); 
+  }
+  // std::cout<<"@addrrr:"<<result.size()<<std::endl; ## remove small RRs, |RR|<=10
 }
 
 //! \brief Generate Random Reverse Reachability Sets - sequential.
@@ -161,13 +167,14 @@ void GenerateRRRSets(GraphTy &G, PRNGeneratorTy &generator,
                      ItrTy begin, ItrTy end,
                      ExecRecordTy &,
                      diff_model_tag &&model_tag,
-                     sequential_tag &&ex_tag) {
+                     sequential_tag &&ex_tag,
+                     const std::string& sortFlag) {
   trng::uniform_int_dist start(0, G.num_nodes());
-
+  
   for (auto itr = begin; itr < end; ++itr) {
     typename GraphTy::vertex_type r = start(generator[0]);
     AddRRRSet(G, r, generator[0], *itr,
-              std::forward<diff_model_tag>(model_tag));
+              std::forward<diff_model_tag>(model_tag),sortFlag);
   }
 }
 
@@ -193,8 +200,23 @@ void GenerateRRRSets(const GraphTy &G,
                      ItrTy begin, ItrTy end,
                      ExecRecordTy &,
                      diff_model_tag &&,
-                     omp_parallel_tag &&) {
-  se.generate(begin, end);
+                     omp_parallel_tag &&,
+                     const std::string& sortFlag) {
+  se.generate(begin, end, sortFlag);
+}
+
+template <typename GraphTy, typename PRNGeneratorTy,
+          typename ItrTy, typename ExecRecordTy,
+          typename diff_model_tag, typename vertex_type>
+void GenerateRRRSets2(const GraphTy &G,
+                     StreamingRRRGenerator<GraphTy, PRNGeneratorTy, ItrTy, diff_model_tag> &se,
+                     ItrTy begin, ItrTy end,
+                     ExecRecordTy &,
+                     diff_model_tag &&,
+                     omp_parallel_tag &&,
+                     std::vector<uint32_t> &globalcnt, vertex_type* maxvtx,
+                     const std::string& sortFlag, int extra_flag, int rthd) {
+  se.generate2(begin, end, globalcnt, maxvtx, sortFlag, extra_flag, rthd);
 }
 
 }  // namespace ripples
