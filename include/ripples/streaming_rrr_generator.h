@@ -91,6 +91,21 @@ void process_mem_usage(double& rss_usage)
     rss_usage = rss * page_size_kb/1024;
 }
 
+void process_mem_usage2(unsigned long& vm_usage)
+{
+    vm_usage     = 0.0;
+    unsigned long vsize;
+    long rss;
+    {
+        std::string ignore;
+        std::ifstream ifs("/proc/self/stat", std::ios_base::in);
+        ifs >> ignore >> ignore >> ignore >> ignore >> ignore >> ignore >> ignore >> ignore >> ignore >> ignore
+                >> ignore >> ignore >> ignore >> ignore >> ignore >> ignore >> ignore >> ignore >> ignore >> ignore
+                >> ignore >> ignore >> vsize >> ignore;
+    }
+    vm_usage = vsize;
+}
+
 int streaming_command_line(std::unordered_map<size_t, size_t> &worker_to_gpu,
                            size_t streaming_workers,
                            size_t streaming_gpu_workers,
@@ -152,6 +167,10 @@ class WalkWorker {
   virtual ~WalkWorker() {}
   virtual void svc_loop(std::atomic<size_t> &mpmc_head, ItrTy begin,
                         ItrTy end, size_t myrank, const std::string& sortFlag) = 0;
+  virtual void svc_loop2(std::atomic<size_t> &mpmc_head, const size_t delta_block, const size_t blockoffset,
+              std::vector<unsigned char*> &compR, std::vector<uint32_t> &compBytes, std::vector<uint32_t> &codeCnt,
+              std::vector<vertex_t*> &copyR, std::vector<uint32_t> &copyCnt, 
+              size_t myrank, const std::string& sortFlag, HuffmanTree* huffmanTree, vertex_t* maxvtx, const size_t block_boundary) = 0;
   virtual void svc_loop3(std::atomic<size_t> &mpmc_head, ItrTy begin,
                         ItrTy end, size_t myrank, const std::string& sortFlag, const int extraFlag, const int rthd) = 0;
   virtual uint32_t wkrGlobalCnt(int i) = 0;
@@ -199,6 +218,31 @@ class CPUWalkWorker : public WalkWorker<GraphTy, ItrTy> {
     }
   }
 
+  void svc_loop2(std::atomic<size_t> &mpmc_head2, const size_t delta_block, const size_t blockoffset,
+      std::vector<unsigned char*> &compR, std::vector<uint32_t> &compBytes, std::vector<uint32_t> &codeCnt,
+      std::vector<vertex_t*> &copyR, std::vector<uint32_t> &copyCnt, 
+      size_t myrank, const std::string& sortFlag, HuffmanTree* huffmanTree, vertex_t* maxvtx, const size_t block_boundary) {
+    size_t offset = 0;
+    size_t workload=0;
+    size_t end = blockoffset + delta_block;
+    // std::cout << "     svc-loop2:("<<myrank<<") [delta-block=" << delta_block;
+    // std::cout << " block-offset="<< blockoffset << "]"<< std::endl;
+    this->globalcnt_.resize(this->G_.num_nodes());
+    for(int i=0;i<this->G_.num_nodes();i++){
+      this->globalcnt_[i]=0;
+    }
+    while ((offset = mpmc_head2.fetch_add(batch_size_)) < end) {
+      size_t first = offset;
+      size_t last = first + batch_size_; 
+      if (last > end) last = end; 
+      batchComp(first, last, sortFlag,
+        compR, compBytes, codeCnt, copyR, copyCnt,
+        this->globalcnt_, huffmanTree, maxvtx, block_boundary);
+      workload+=(last-first);
+    }
+    std::cout << "         loop2:("<<myrank<<") samples: " << workload << std::endl;
+  }
+
   void svc_loop3(std::atomic<size_t> &mpmc_head, ItrTy begin, ItrTy end, size_t myrank, 
                  const std::string& sortFlag, const int extraFlag, const int rthd) {
     size_t offset = 0;
@@ -218,7 +262,7 @@ class CPUWalkWorker : public WalkWorker<GraphTy, ItrTy> {
       workload+=std::distance(first, last);
     }
     if(workload==0){
-      std::cout << "     svc-loop3:("<<myrank<<") samples: " << workload << ". " <<std::endl; 
+      std::cout << "     svc-loop1:("<<myrank<<") samples: " << workload << ". " <<std::endl; 
     }
   }
 
@@ -332,6 +376,87 @@ class CPUWalkWorker : public WalkWorker<GraphTy, ItrTy> {
 #endif
   }
 
+  void batchComp(size_t first, size_t last, const std::string& sortFlag,
+        std::vector<unsigned char*> &compR, std::vector<uint32_t> &compBytes, std::vector<uint32_t> &codeCnt,
+        std::vector<vertex_t*> &copyR, std::vector<uint32_t> &copyCnt,
+        std::vector<uint32_t> &globalcnt, HuffmanTree* huffmanTree, vertex_t* maxvtx, const size_t block_boundary) {
+#if CUDA_PROFILE
+    auto start = std::chrono::high_resolution_clock::now();
+#endif
+    size_t s2=0;
+    double vm1;
+    thread_local auto local_rng = rng_;
+    thread_local auto local_u = u_;
+    while (first<last) {
+      std::vector<vertex_t> tmpR;
+      unsigned char* tmp_encode=NULL;
+      vertex_t* tmp_encopy = NULL; 
+      uint32_t encodeSize=0, code_cnt=0, copy_cnt=0;
+      vertex_t root = local_u(local_rng);
+      AddRRRSet(this->G_, root, local_rng, tmpR, diff_model_tag{},sortFlag);
+      // if(first==block_boundary){
+      //   std::cout<<" RR["<<first<<"]=";
+        // for(int k=0;k<tmpR.size();k++){
+        //   std::cout<<tmpR[k]<<",";
+        // }
+      //   std::cout<<" tmpR.size="<<tmpR.size()<<std::endl;
+      // }
+      if(tmpR.size()<1){
+        tmpR.clear();
+      }
+      else{
+          for (int i = 0;i<tmpR.size();i++){
+            globalcnt[tmpR[i]]+=1;
+          }
+          s2 = tmpR.size();
+          tmp_encode = (unsigned char*)malloc(s2*sizeof(int));
+          std::memset(tmp_encode,0,s2*sizeof(int));
+          tmp_encopy = (vertex_t*)malloc(s2*sizeof(vertex_t));
+          std::memset(tmp_encopy,0,s2*sizeof(vertex_t));
+          encodeRR3(huffmanTree, tmpR, s2, tmp_encode, &encodeSize, &code_cnt, tmp_encopy, &copy_cnt, maxvtx, first);
+          if(encodeSize>0){
+            compR[first]=(unsigned char*)std::malloc(encodeSize*sizeof(unsigned char));
+            std::memset(compR[first], 0, encodeSize);
+            std::memcpy(compR[first], tmp_encode, encodeSize*sizeof(unsigned char));
+          }
+          compBytes[first]=encodeSize;
+          codeCnt[first]=code_cnt;
+          
+          if(copy_cnt>0){
+            copyR[first]=(vertex_t*)std::malloc(copy_cnt*sizeof(vertex_t));
+            std::memset(copyR[first], 0, copy_cnt);
+            std::memcpy(copyR[first], tmp_encopy, copy_cnt*sizeof(vertex_t));
+            // if(first==block_boundary){ 
+            //   std::cout<<" copyR["<<first<<"]=";
+            //   // for(int k=0;k<copy_cnt;k++){
+            //   //   std::cout<<copyR[first][k]<<","<<tmp_encopy[k]<<",";
+            //   // }
+            //   std::cout<<" copyR.size="<<copy_cnt<<std::endl;
+            // }
+          }
+          copyCnt[first]=copy_cnt;
+          // if(first==block_boundary){ 
+          //     std::cout<<" compRR-["<<first<<"] encode.size="<<code_cnt;
+          //     std::cout<<" copyR.size="<<copy_cnt<<std::endl;
+          //   }
+          free(tmp_encode);
+          free(tmp_encopy);
+          // std::cout<<" ["<<first<<"] freed"<<std::endl;
+          tmpR.clear();
+          tmpR.shrink_to_fit();
+          first++;  
+      }
+    }
+
+    rng_ = local_rng;
+    u_ = local_u;
+#if CUDA_PROFILE
+    auto &p(prof_bd.back());
+    p.d_ += std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::high_resolution_clock::now() - start);
+    p.n_ += size;
+#endif
+  }
 
 #if CUDA_PROFILE
  public:
