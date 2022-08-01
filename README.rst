@@ -37,10 +37,16 @@ Publications
                Sathanur, Ryan Mcclure, Jason McDermott. 2019. Fast and Scalable
                Implementations of Influence Maximization Algorithms. In
                Proceedings of the IEEE Cluster 2019.
-.. [ICS2020] Minutoli, Marco, Maurizio Drocco, Mahantesh Halappanavar, Antonino
+.. [ICS20] Minutoli, Marco, Maurizio Drocco, Mahantesh Halappanavar, Antonino
                Tumeo, and Ananth Kalyanaraman. "cuRipples: influence
                maximization on multi-CPU systems." In Proceedings of the 34th
                ACM International Conference on Supercomputing.
+               
+.. [PACT22] Xinyu Chen, Marco Minutoli, Jiannan Tian, Mahantesh Halappanavar, 
+              Ananth Kalyanaraman, and Dingwen Tao. "HBMax: Optimizing Memory 
+              Efficiency for Parallel Influence Maximization on Multicore 
+              Architectures." In Proceedings of the 31st International Conference 
+              on Parallel Architectures and Compilation Techniques.              
 
 Quickstart with Conan
 =====================
@@ -140,6 +146,8 @@ Ripples Team
 - `Mahantesh Halappanavar <mahantesh.halappanavar@pnnl.gov>`_
 - `Ananth Kalyanaraman <ananth@wsu.edu>`_
 - `Maurizio Drocco <maurizio.drocco@ibm.com>`_
+- `Xinyu Chen <xinyu.chen1@wsu.edu>`_
+- `Dingwen Tao <ditao@iu.edu>`_
 
 Disclamer Notice
 ================
