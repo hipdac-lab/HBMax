@@ -91,21 +91,6 @@ void process_mem_usage(double& rss_usage)
     rss_usage = rss * page_size_kb/1024;
 }
 
-void process_mem_usage2(unsigned long& vm_usage)
-{
-    vm_usage     = 0.0;
-    unsigned long vsize;
-    long rss;
-    {
-        std::string ignore;
-        std::ifstream ifs("/proc/self/stat", std::ios_base::in);
-        ifs >> ignore >> ignore >> ignore >> ignore >> ignore >> ignore >> ignore >> ignore >> ignore >> ignore
-                >> ignore >> ignore >> ignore >> ignore >> ignore >> ignore >> ignore >> ignore >> ignore >> ignore
-                >> ignore >> ignore >> vsize >> ignore;
-    }
-    vm_usage = vsize;
-}
-
 int streaming_command_line(std::unordered_map<size_t, size_t> &worker_to_gpu,
                            size_t streaming_workers,
                            size_t streaming_gpu_workers,
@@ -166,13 +151,9 @@ class WalkWorker {
   WalkWorker(const GraphTy &G) : G_(G) {}
   virtual ~WalkWorker() {}
   virtual void svc_loop(std::atomic<size_t> &mpmc_head, ItrTy begin,
-                        ItrTy end, size_t myrank, const std::string& sortFlag) = 0;
-  virtual void svc_loop2(std::atomic<size_t> &mpmc_head, const size_t delta_block, const size_t blockoffset,
-              std::vector<unsigned char*> &compR, std::vector<uint32_t> &compBytes, std::vector<uint32_t> &codeCnt,
-              std::vector<vertex_t*> &copyR, std::vector<uint32_t> &copyCnt, 
-              size_t myrank, const std::string& sortFlag, HuffmanTree* huffmanTree, vertex_t* maxvtx, const size_t block_boundary) = 0;
+                        ItrTy end) = 0;
   virtual void svc_loop3(std::atomic<size_t> &mpmc_head, ItrTy begin,
-                        ItrTy end, size_t myrank, const std::string& sortFlag, const int extraFlag, const int rthd) = 0;
+                        ItrTy end, size_t myrank) = 0;
   virtual uint32_t wkrGlobalCnt(int i) = 0;
   virtual void freeGlobalCnt() = 0;
  protected:
@@ -195,8 +176,21 @@ class CPUWalkWorker : public WalkWorker<GraphTy, ItrTy> {
  public:
   CPUWalkWorker(const GraphTy &G, const PRNGeneratorTy &rng)
       : WalkWorker<GraphTy, ItrTy>(G), rng_(rng), u_(0, G.num_nodes()) {}
-      
-  void svc_loop(std::atomic<size_t> &mpmc_head, ItrTy begin, ItrTy end, size_t myrank, const std::string& sortFlag) {
+  
+  void svc_loop(std::atomic<size_t> &mpmc_head, ItrTy begin, ItrTy end) {
+    size_t offset = 0;
+    while ((offset = mpmc_head.fetch_add(batch_size_)) <
+           std::distance(begin, end)) {
+      auto first = begin;
+      std::advance(first, offset);
+      auto last = first;
+      std::advance(last, batch_size_);
+      if (last > end) last = end;
+      batch(first, last);
+    }
+  }
+
+  void svc_loop3(std::atomic<size_t> &mpmc_head, ItrTy begin, ItrTy end, size_t myrank) {
     size_t offset = 0;
     size_t workload=0;
     this->globalcnt_.resize(this->G_.num_nodes());
@@ -210,55 +204,7 @@ class CPUWalkWorker : public WalkWorker<GraphTy, ItrTy> {
       auto last = first;
       std::advance(last, batch_size_);
       if (last > end) last = end;
-      batch(first, last,myrank,sortFlag,this->globalcnt_);
-      workload+=std::distance(first, last);
-    }
-    if(workload==0){
-      std::cout << "     svc-loop1:("<<myrank<<") samples: " << workload << ". " <<std::endl; 
-    }
-  }
-
-  void svc_loop2(std::atomic<size_t> &mpmc_head2, const size_t delta_block, const size_t blockoffset,
-      std::vector<unsigned char*> &compR, std::vector<uint32_t> &compBytes, std::vector<uint32_t> &codeCnt,
-      std::vector<vertex_t*> &copyR, std::vector<uint32_t> &copyCnt, 
-      size_t myrank, const std::string& sortFlag, HuffmanTree* huffmanTree, vertex_t* maxvtx, const size_t block_boundary) {
-    size_t offset = 0;
-    size_t workload=0;
-    size_t end = blockoffset + delta_block;
-    // std::cout << "     svc-loop2:("<<myrank<<") [delta-block=" << delta_block;
-    // std::cout << " block-offset="<< blockoffset << "]"<< std::endl;
-    this->globalcnt_.resize(this->G_.num_nodes());
-    for(int i=0;i<this->G_.num_nodes();i++){
-      this->globalcnt_[i]=0;
-    }
-    while ((offset = mpmc_head2.fetch_add(batch_size_)) < end) {
-      size_t first = offset;
-      size_t last = first + batch_size_; 
-      if (last > end) last = end; 
-      batchComp(first, last, sortFlag,
-        compR, compBytes, codeCnt, copyR, copyCnt,
-        this->globalcnt_, huffmanTree, maxvtx, block_boundary);
-      workload+=(last-first);
-    }
-    std::cout << "         loop2:("<<myrank<<") samples: " << workload << std::endl;
-  }
-
-  void svc_loop3(std::atomic<size_t> &mpmc_head, ItrTy begin, ItrTy end, size_t myrank, 
-                 const std::string& sortFlag, const int extraFlag, const int rthd) {
-    size_t offset = 0;
-    size_t workload=0;
-    this->globalcnt_.resize(this->G_.num_nodes());
-    for(int i=0;i<this->G_.num_nodes();i++){
-      this->globalcnt_[i]=0;
-    }
-    while ((offset = mpmc_head.fetch_add(batch_size_)) <
-           std::distance(begin, end)) {
-      auto first = begin;
-      std::advance(first, offset);
-      auto last = first;
-      std::advance(last, batch_size_);
-      if (last > end) last = end;
-      batch2(first, last,myrank,sortFlag, extraFlag, this->globalcnt_, rthd);
+      batch2(first, last, this->globalcnt_);
       workload+=std::distance(first, last);
     }
     if(workload==0){
@@ -280,16 +226,17 @@ class CPUWalkWorker : public WalkWorker<GraphTy, ItrTy> {
   PRNGeneratorTy rng_;
   trng::uniform_int_dist u_;
 
-  void batch_old(ItrTy first, ItrTy last, size_t myrank, const std::string& sortFlag) {
+  void batch(ItrTy first, ItrTy last) {
 #if CUDA_PROFILE
     auto start = std::chrono::high_resolution_clock::now();
 #endif
     auto size = std::distance(first, last);
-    thread_local auto local_rng = rng_;
-    thread_local auto local_u = u_;
-    while (first != last) {
+    auto local_rng = rng_;
+    auto local_u = u_;
+    for (;first != last; ++first) {
       vertex_t root = local_u(local_rng);
-      AddRRRSet(this->G_, root, local_rng, *first++, diff_model_tag{},sortFlag);
+
+      AddRRRSet(this->G_, root, local_rng, *first, diff_model_tag{});
     }
 
     rng_ = local_rng;
@@ -302,7 +249,7 @@ class CPUWalkWorker : public WalkWorker<GraphTy, ItrTy> {
 #endif
   }
 
-  void batch(ItrTy first, ItrTy last, size_t myrank, const std::string& sortFlag, std::vector<uint32_t> &globalcnt) {
+  void batch2(ItrTy first, ItrTy last, std::vector<uint32_t> &globalcnt) {
 #if CUDA_PROFILE
     auto start = std::chrono::high_resolution_clock::now();
 #endif
@@ -313,7 +260,7 @@ class CPUWalkWorker : public WalkWorker<GraphTy, ItrTy> {
     thread_local auto local_u = u_;
     while (first != last) {
       vertex_t root = local_u(local_rng);
-      AddRRRSet(this->G_, root, local_rng, *first, diff_model_tag{},sortFlag);
+      AddRRRSet2(this->G_, root, local_rng, *first, diff_model_tag{});
       if((*first).size()<1){
         (*first).clear();
       }
@@ -324,128 +271,6 @@ class CPUWalkWorker : public WalkWorker<GraphTy, ItrTy> {
         first++;
       }
       batch_progress++;
-    }
-
-    rng_ = local_rng;
-    u_ = local_u;
-#if CUDA_PROFILE
-    auto &p(prof_bd.back());
-    p.d_ += std::chrono::duration_cast<std::chrono::nanoseconds>(
-        std::chrono::high_resolution_clock::now() - start);
-    p.n_ += size;
-#endif
-  }
-
-  void batch2(ItrTy first, ItrTy last, size_t myrank, 
-              const std::string& sortFlag, const int extraFlag, 
-              std::vector<uint32_t> &globalcnt, const int rthd) {
-#if CUDA_PROFILE
-    auto start = std::chrono::high_resolution_clock::now();
-#endif
-    auto size = std::distance(first, last);
-    size_t batch_progress=0;
-    int sample_threshold = 1;
-    double vm1;
-    thread_local auto local_rng = rng_;
-    thread_local auto local_u = u_;
-    if(extraFlag==1){
-      sample_threshold = rthd;
-    }
-    while (first != last) {
-      vertex_t root = local_u(local_rng);
-      AddRRRSet(this->G_, root, local_rng, *first, diff_model_tag{},sortFlag);
-      if((*first).size()<sample_threshold){
-        (*first).clear();
-      }
-      else{
-        for (int i = 0;i<(*first).size();i++){
-          globalcnt[(*first)[i]]+=1;
-        }
-        first++;
-      }
-      batch_progress++;
-    }
-
-    rng_ = local_rng;
-    u_ = local_u;
-#if CUDA_PROFILE
-    auto &p(prof_bd.back());
-    p.d_ += std::chrono::duration_cast<std::chrono::nanoseconds>(
-        std::chrono::high_resolution_clock::now() - start);
-    p.n_ += size;
-#endif
-  }
-
-  void batchComp(size_t first, size_t last, const std::string& sortFlag,
-        std::vector<unsigned char*> &compR, std::vector<uint32_t> &compBytes, std::vector<uint32_t> &codeCnt,
-        std::vector<vertex_t*> &copyR, std::vector<uint32_t> &copyCnt,
-        std::vector<uint32_t> &globalcnt, HuffmanTree* huffmanTree, vertex_t* maxvtx, const size_t block_boundary) {
-#if CUDA_PROFILE
-    auto start = std::chrono::high_resolution_clock::now();
-#endif
-    size_t s2=0;
-    double vm1;
-    thread_local auto local_rng = rng_;
-    thread_local auto local_u = u_;
-    while (first<last) {
-      std::vector<vertex_t> tmpR;
-      unsigned char* tmp_encode=NULL;
-      vertex_t* tmp_encopy = NULL; 
-      uint32_t encodeSize=0, code_cnt=0, copy_cnt=0;
-      vertex_t root = local_u(local_rng);
-      AddRRRSet(this->G_, root, local_rng, tmpR, diff_model_tag{},sortFlag);
-      // if(first==block_boundary){
-      //   std::cout<<" RR["<<first<<"]=";
-        // for(int k=0;k<tmpR.size();k++){
-        //   std::cout<<tmpR[k]<<",";
-        // }
-      //   std::cout<<" tmpR.size="<<tmpR.size()<<std::endl;
-      // }
-      if(tmpR.size()<1){
-        tmpR.clear();
-      }
-      else{
-          for (int i = 0;i<tmpR.size();i++){
-            globalcnt[tmpR[i]]+=1;
-          }
-          s2 = tmpR.size();
-          tmp_encode = (unsigned char*)malloc(s2*sizeof(int));
-          std::memset(tmp_encode,0,s2*sizeof(int));
-          tmp_encopy = (vertex_t*)malloc(s2*sizeof(vertex_t));
-          std::memset(tmp_encopy,0,s2*sizeof(vertex_t));
-          encodeRR3(huffmanTree, tmpR, s2, tmp_encode, &encodeSize, &code_cnt, tmp_encopy, &copy_cnt, maxvtx, first);
-          if(encodeSize>0){
-            compR[first]=(unsigned char*)std::malloc(encodeSize*sizeof(unsigned char));
-            std::memset(compR[first], 0, encodeSize);
-            std::memcpy(compR[first], tmp_encode, encodeSize*sizeof(unsigned char));
-          }
-          compBytes[first]=encodeSize;
-          codeCnt[first]=code_cnt;
-          
-          if(copy_cnt>0){
-            copyR[first]=(vertex_t*)std::malloc(copy_cnt*sizeof(vertex_t));
-            std::memset(copyR[first], 0, copy_cnt);
-            std::memcpy(copyR[first], tmp_encopy, copy_cnt*sizeof(vertex_t));
-            // if(first==block_boundary){ 
-            //   std::cout<<" copyR["<<first<<"]=";
-            //   // for(int k=0;k<copy_cnt;k++){
-            //   //   std::cout<<copyR[first][k]<<","<<tmp_encopy[k]<<",";
-            //   // }
-            //   std::cout<<" copyR.size="<<copy_cnt<<std::endl;
-            // }
-          }
-          copyCnt[first]=copy_cnt;
-          // if(first==block_boundary){ 
-          //     std::cout<<" compRR-["<<first<<"] encode.size="<<code_cnt;
-          //     std::cout<<" copyR.size="<<copy_cnt<<std::endl;
-          //   }
-          free(tmp_encode);
-          free(tmp_encopy);
-          // std::cout<<" ["<<first<<"] freed"<<std::endl;
-          tmpR.clear();
-          tmpR.shrink_to_fit();
-          first++;  
-      }
     }
 
     rng_ = local_rng;
@@ -565,7 +390,7 @@ class GPUWalkWorker<GraphTy, PRNGeneratorTy, ItrTy, linear_threshold_tag>
                       conf_.max_blocks_, conf_.block_size_);
   }
 
-  void svc_loop(std::atomic<size_t> &mpmc_head, ItrTy begin, ItrTy end, size_t myrank, const std::string& sortFlag) {
+  void svc_loop(std::atomic<size_t> &mpmc_head, ItrTy begin, ItrTy end) {
     cuda_set_device(cuda_ctx_->gpu_id);
     size_t offset = 0;
     auto batch_size = conf_.num_gpu_threads();
@@ -576,7 +401,7 @@ class GPUWalkWorker<GraphTy, PRNGeneratorTy, ItrTy, linear_threshold_tag>
       auto last = first;
       std::advance(last, batch_size);
       if (last > end) last = end;
-      batch(first, last, myrank,sortFlag);
+      batch(first, last);
     }
   }
 
@@ -591,7 +416,7 @@ class GPUWalkWorker<GraphTy, PRNGeneratorTy, ItrTy, linear_threshold_tag>
   mask_word_t *lt_res_mask_, *d_lt_res_mask_;
   PRNGeneratorTy *d_trng_state_;
 
-  void batch(ItrTy first, ItrTy last, size_t myrank, const std::string& sortFlag) {
+  void batch(ItrTy first, ItrTy last) {
 #if CUDA_PROFILE
     auto &p(prof_bd.back());
     auto start = std::chrono::high_resolution_clock::now();
@@ -618,7 +443,7 @@ class GPUWalkWorker<GraphTy, PRNGeneratorTy, ItrTy, linear_threshold_tag>
     t0 = t1;
 #endif
 
-    batch_lt_build(first, size,sortFlag);
+    batch_lt_build(first, size);
 #if CUDA_PROFILE
     t1 = std::chrono::high_resolution_clock::now();
     p.dbuild_ += std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0);
@@ -630,7 +455,7 @@ class GPUWalkWorker<GraphTy, PRNGeneratorTy, ItrTy, linear_threshold_tag>
 #endif
   }
 
-  void batch_lt_build(ItrTy first, size_t batch_size, const std::string& sortFlag) {
+  void batch_lt_build(ItrTy first, size_t batch_size) {
 #if CUDA_PROFILE
     auto &p(prof_bd.back());
 #endif
@@ -653,7 +478,7 @@ class GPUWalkWorker<GraphTy, PRNGeneratorTy, ItrTy, linear_threshold_tag>
 #endif
         auto root = res_mask[1];
         AddRRRSet(this->G_, root, rng_, rrr_set,
-                  ripples::linear_threshold_tag{},sortFlag);
+                  ripples::linear_threshold_tag{});
       }
 
       std::stable_sort(rrr_set.begin(), rrr_set.end());
@@ -779,7 +604,7 @@ class GPUWalkWorker<GraphTy, PRNGeneratorTy, ItrTy, independent_cascade_tag>
     solver_->rng(d_trng_state_);
   }
 
-  void svc_loop(std::atomic<size_t> &mpmc_head, ItrTy begin, ItrTy end, size_t myrank, const std::string& sortFlag) {
+  void svc_loop(std::atomic<size_t> &mpmc_head, ItrTy begin, ItrTy end) {
     // set device and stream
     cuda_set_device(cuda_ctx_->gpu_id);
 
@@ -791,7 +616,7 @@ class GPUWalkWorker<GraphTy, PRNGeneratorTy, ItrTy, independent_cascade_tag>
       auto last = first;
       std::advance(last, batch_size_);
       if (last > end) last = end;
-      batch(first, last, myrank,sortFlag);
+      batch(first, last);
     }
   }
 
@@ -813,7 +638,7 @@ class GPUWalkWorker<GraphTy, PRNGeneratorTy, ItrTy, independent_cascade_tag>
       *d_ic_predecessors_;
   PRNGeneratorTy *d_trng_state_;
 
-  void batch(ItrTy first, ItrTy last, size_t myrank, const std::string& sortFlag) {
+  void batch(ItrTy first, ItrTy last) {
 #if CUDA_PROFILE
     auto &p(prof_bd.back());
     auto start = std::chrono::high_resolution_clock::now();
@@ -1045,8 +870,7 @@ class StreamingRRRGenerator {
 
   IMMExecutionRecord &execution_record() { return record_; }
 
-  void generate(ItrTy begin, ItrTy end, 
-                const std::string& sortFlag) {
+  void generate(ItrTy begin, ItrTy end) {
 #if CUDA_PROFILE
     auto start = std::chrono::high_resolution_clock::now();
     for (auto &w : workers) w->begin_prof_iter();
@@ -1059,11 +883,10 @@ class StreamingRRRGenerator {
 #pragma omp parallel num_threads(num_cpu_workers_ + num_gpu_workers_)
     {
       size_t rank = omp_get_thread_num();
-      workers[rank]->svc_loop(mpmc_head, begin, end, rank, sortFlag);
+      workers[rank]->svc_loop(mpmc_head, begin, end);
     }
     process_mem_usage(vm2);
-    std::cout << "se.generate:("<<num_cpu_workers_<<") threads, "<<workers.size()<<
-      "workers. Using: " << vm1<<","<<vm2 << " Mb" <<std::endl; 
+    std::cout << "se.generate:("<<num_cpu_workers_<<") threads using: " << vm1<<","<<vm2 << " Mb" <<std::endl; 
 #if CUDA_PROFILE
     auto d = std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::high_resolution_clock::now() - start);
@@ -1075,10 +898,8 @@ class StreamingRRRGenerator {
     ri.Total = std::chrono::duration_cast<decltype(ri.Total)>(d);
 #endif
   }
-
-  void generate2(ItrTy begin, ItrTy end, 
-                std::vector<uint32_t> &globalcnt, vertex_t* maxvtx,
-                const std::string& sortFlag, int extra_flag, int rthd) {
+  
+  void generate2(ItrTy begin, ItrTy end, std::vector<uint32_t> &globalcnt, vertex_t* maxvtx) {
 #if CUDA_PROFILE
     auto start = std::chrono::high_resolution_clock::now();
     for (auto &w : workers) w->begin_prof_iter();
@@ -1091,10 +912,10 @@ class StreamingRRRGenerator {
 #pragma omp parallel num_threads(num_cpu_workers_ + num_gpu_workers_)
     {
       size_t rank = omp_get_thread_num();
-      workers[rank]->svc_loop3(mpmc_head, begin, end, rank, sortFlag, extra_flag, rthd);
+      workers[rank]->svc_loop3(mpmc_head, begin, end, rank);
     }
     size_t num_threads = omp_get_max_threads();
-    std::cout<<" num-threads="<<num_threads<<" global-cnt.size="<<globalcnt.size()<<"sampling-threshold="<<rthd<<std::endl;
+    std::cout<<" num-threads="<<num_threads<<" global-cnt.size="<<globalcnt.size()<<std::endl;
     for(int i = 0; i<num_threads; i++){
       for(int j=0; j<globalcnt.size(); j++){
         globalcnt[j] += workers[i]->wkrGlobalCnt(j);

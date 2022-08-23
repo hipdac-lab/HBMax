@@ -70,62 +70,6 @@
 namespace ripples {
 
 
-// template <typename GraphTy, typename RRRset>
-// auto DumpRRRSets(const GraphTy &G, std::vector<RRRset> &RRRsets) {
-//   using vertex_type = typename GraphTy::vertex_type;
-//   auto in_begin=RRRsets.begin();
-//   std::vector<vertex_type> output_vtx;
-//   std::for_each(in_begin->begin(), in_begin->begin()+10,
-//                 [&](const vertex_type v) { output_vtx.push_back(v); });
-//   return output_vtx;
-// }
-
-template <typename GraphTy, typename RRRset>
-void DumpRRRSets(const GraphTy &G, std::vector<RRRset> &RRRsets) {
-  using vertex_type = typename GraphTy::vertex_type;
-  auto in_begin=RRRsets.begin();
-  auto in_end=RRRsets.end();
-  size_t s1 = RRRsets.size();
-  size_t total_rrr_size = 0;
-  // std::vector<vertex_type> output_vtx;
-  std::ofstream FILE("rrr_out.bin", std::ios::out | std::ofstream::binary);
-  FILE.write(reinterpret_cast<const char *>(&s1), sizeof(s1));
-  for (; in_begin != in_end; ++in_begin) {
-    // std::for_each(in_begin->begin(), in_begin->end(),
-    //               [&](const vertex_type v) { output_vtx.push_back(v); });
-    int s2=std::distance(in_begin->begin(),in_begin->end());
-    if(s2!=in_begin->size()){
-      std::cout<<"s2="<<s2<<", size="<<in_begin->size()<<std::endl;
-    }
-    total_rrr_size+=s2;
-    FILE.write(reinterpret_cast<const char *>(&s2), sizeof(s2));
-    // FILE.write(reinterpret_cast<const char *> (&(*in_begin->begin())), s2*sizeof(vertex_type));
-  }
-  std::cout<<"total-rrr="<<s1<<", total-vtx-size="<<total_rrr_size;
-  std::cout<<", total-bytes:"<<(total_rrr_size * sizeof(vertex_type))/(1024*1024)<<"Mb."<<std::endl;
-  // FILE.write(reinterpret_cast<const char *> (&output_vtx[0]), total_rrr_size*sizeof(vertex_type));
-}
-
-template <typename RRRset>
-void DumpCompRRRSets(unsigned char** compR, unsigned int* compBytes, std::vector<RRRset> &RRRsets) {
-  size_t s1 = RRRsets.size();
-  size_t total_rrr_size = 0;
-  // std::vector<vertex_type> output_vtx;
-  std::ofstream FILE("compr_out.bin", std::ios::out | std::ofstream::binary);
-  FILE.write(reinterpret_cast<const char *>(&s1), sizeof(s1));
-  for (size_t i=0; i<s1; i++) {
-    int s2=RRRsets[i].size();
-    total_rrr_size+=s2;
-    unsigned int s2bytes=compBytes[i];
-    FILE.write(reinterpret_cast<const char *>(&s2), sizeof(s2));
-    // std::cout<<"("<<i<<"):"<<s2<<":"<<compR[i][0]<<" ";
-    // FILE.write(reinterpret_cast<const char *> (compR[i]), s2bytes*sizeof(unsigned char));
-  }
-  std::cout<<std::endl;
-  std::cout<<"total-compRRR="<<s1<<", total-comp-size="<<total_rrr_size;
-  std::cout<<", total-bytes:"<<(total_rrr_size * sizeof(int))/(1024*1024)<<"Mb."<<std::endl;
-  // FILE.write(reinterpret_cast<const char *> (&output_vtx[0]), total_rrr_size*sizeof(vertex_type));
-}
 //! \brief Select k seeds starting from the a list of Random Reverse
 //! Reachability Sets.
 //!
@@ -244,8 +188,8 @@ auto FindMostInfluentialSet(const GraphTy &G, const ConfTy &CFG,
   }
 #endif
 
-  StreamingFindMostInfluential<GraphTy> SE(G, RRRsets, num_max_cpu, num_gpu, record);
-  return SE.find_most_influential_set(CFG.k,CFG.histogramMode);
+  StreamingFindMostInfluential<GraphTy> SE(G, RRRsets, num_max_cpu, num_gpu);
+  return SE.find_most_influential_set(CFG.k);
 }
 
 #if RIPPLES_ENABLE_CUDA

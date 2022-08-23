@@ -72,9 +72,9 @@ class FindMostInfluentialWorker {
   virtual PartitionIndices<rrr_set_iterator> LoadData(rrr_set_iterator B,
                                                       rrr_set_iterator E) = 0;
 
-  virtual void InitialCount(const std::string& hist) = 0;
+  virtual void InitialCount() = 0;
 
-  virtual void UpdateCounters(vertex_type last_seed, const std::string& hist) = 0;
+  virtual void UpdateCounters(vertex_type last_seed) = 0;
 
   virtual void ReduceCounters(size_t step) = 0;
 
@@ -237,7 +237,7 @@ class GPUFindMostInfluentialWorker : public FindMostInfluentialWorker<GraphTy> {
     return PartitionIndices<rrr_set_iterator>(B, E, pivot);
   }
 
-  void InitialCount(const std::string& hist) {
+  void InitialCount() {
     cuda_set_device(device_number_);
 
     cuda_memset(d_counters_, 0, num_nodes_ * sizeof(uint32_t), stream_);
@@ -248,7 +248,7 @@ class GPUFindMostInfluentialWorker : public FindMostInfluentialWorker<GraphTy> {
     cuda_sync(stream_);
   }
 
-  void UpdateCounters(vertex_type last_seed, const std::string& hist) {
+  void UpdateCounters(vertex_type last_seed) {
     cuda_set_device(device_number_);
 
     CudaUpdateCounters(stream_, d_rr_set_size_, d_rr_vertices_, d_rr_edges_,
@@ -294,19 +294,13 @@ class CPUFindMostInfluentialWorker : public FindMostInfluentialWorker<GraphTy> {
       std::vector<vertex_type> &global_count,
       std::vector<std::pair<vertex_type, size_t>> &queue_storage,
       rrr_set_iterator begin, rrr_set_iterator end, size_t num_threads,
-      uint32_t *d_cpu_counters, IMMExecutionRecord &record)
+      uint32_t *d_cpu_counters)
       : global_count_(global_count),
         queue_storage_(queue_storage),
         begin_(begin),
         end_(end),
         num_threads_(num_threads),
-        d_cpu_counters_(d_cpu_counters),
-        record_(record) {
-          // size_t num_rrrs = std::distance(begin_, end_);
-          // std::cout<< "rrr-size=" << num_rrrs << std::endl;
-          // size_t percent_rrrs = num_rrrs/10;
-          // end_=begin_+percent_rrrs;
-        }
+        d_cpu_counters_(d_cpu_counters){}
 
   virtual ~CPUFindMostInfluentialWorker() {}
 
@@ -319,91 +313,33 @@ class CPUFindMostInfluentialWorker : public FindMostInfluentialWorker<GraphTy> {
 
   void set_first_rrr_set(rrr_set_iterator I) { begin_ = I; }
 
-  void InitialCount(const std::string& hist) {
-    std::chrono::duration<double, std::milli> timeCntOccr(0);
-    std::chrono::duration<double, std::milli> timeIntHeap(0);
-    auto t0 = std::chrono::high_resolution_clock::now();
-    if (hist == "LH"){
-      CountOccurrencies(begin_, end_, global_count_.begin(), global_count_.end(), num_threads_);
-    }
-    else{
-      CountOccurrencies_reduce(begin_, end_, global_count_, num_threads_);
-      // CountOccurrencies_readonly(begin_, end_, global_count_.begin(), global_count_.end(), num_threads_);
-    }
-    std::cout<<"init-count:"<<global_count_[307]<<std::endl;
-    auto t1 = std::chrono::high_resolution_clock::now();
+  void InitialCount() {
+    CountOccurrencies(begin_, end_, global_count_.begin(), global_count_.end(), num_threads_);
     // We have GPU workers so we won't use the heap.
     if (d_cpu_counters_ != nullptr) return;
 
-
     InitHeapStorage(global_count_.begin(), global_count_.end(),
                     queue_storage_.begin(), queue_storage_.end(), num_threads_);
-    auto t2 = std::chrono::high_resolution_clock::now();
-    timeCntOccr=t1-t0;
-    timeIntHeap=t2-t1;
-    record_.Counting.push_back(std::chrono::duration_cast<typename IMMExecutionRecord::ex_time_ms>(timeCntOccr));
-    std::ofstream FILE("hist_out.bin", std::ios::out | std::ofstream::binary);
-    size_t total_vtx=global_count_.size();
-    FILE.write(reinterpret_cast<const char *>(&total_vtx), sizeof(total_vtx));
-    FILE.write(reinterpret_cast<const char *> (&(*global_count_.begin())), total_vtx*sizeof(vertex_type));
   }
 
-  void UpdateCounters(vertex_type last_seed, const std::string& hist) {
+  void UpdateCounters(vertex_type last_seed) {
     if (!has_work()) return;
 
-    // std::cout<<" histogram-mode= "<<hist<<std::endl;
     auto cmp = [=](const RRRset<GraphTy> &a) -> auto {
-      return std::find(a.begin(), a.end(), last_seed)==a.end(); //xchen
-      // return !std::binary_search(a.begin(), a.end(), last_seed); xchen
+      return !std::binary_search(a.begin(), a.end(), last_seed); 
     };
 
-    std::chrono::duration<double, std::milli> timePartition(0);
-    std::chrono::duration<double, std::milli> timeUpdate(0);
-    std::chrono::duration<double, std::milli> timeReadOnly(0);
-
-    auto t0 = std::chrono::high_resolution_clock::now();
     auto itr = partition(begin_, end_, cmp, num_threads_);
     
-    auto t1 = std::chrono::high_resolution_clock::now();
-    // if (std::distance(itr, end_) < std::distance(begin_, itr)) {
-    //   ripples::UpdateCounters(itr, end_, global_count_, num_threads_);
-    // } else {
-// #pragma omp parallel for simd num_threads(num_threads_)
-      // for (size_t i = 0; i < global_count_.size(); ++i) global_count_[i] = 0;
+    if (std::distance(itr, end_) < std::distance(begin_, itr)) {
+      ripples::UpdateCounters(itr, end_, global_count_, num_threads_);
+    } else {
+#pragma omp parallel for simd num_threads(num_threads_)
+      for (size_t i = 0; i < global_count_.size(); ++i) global_count_[i] = 0;
       std::fill(global_count_.begin(), global_count_.end(), 0);
-      // if (hist == "LH"){ //low-high
-      // CountOccurrencies(begin_, itr, global_count_.begin(), global_count_.end(), num_threads_);
-      CountOccurrencies(begin_, itr, global_count_.begin(), global_count_.end(), 1);
-      // }else{ //reduction
-      //   CountOccurrencies_readonly(begin_, itr, global_count_.begin(), global_count_.end(), num_threads_);
-      // }
-    // }
-    auto t2 = std::chrono::high_resolution_clock::now();
-    // uint32_t total_vtx=std::distance(global_count_.begin(), global_count_.end());
-    // std::vector<uint32_t> glocal_count(total_vtx);
-    // std::fill(glocal_count.begin(), glocal_count.end(), 0);
-    // CountOccurrencies_readonly(begin_, itr, glocal_count.begin(), glocal_count.end(), num_threads_);
-    // int diff=0,diff_cnt=0;
-    // for (int i=0;i<total_vtx;i++){
-    //   diff=global_count_[i]-glocal_count[i];
-    //   if (diff!=0){
-    //     std::cout<<" @"<<i<<global_count_[i]<<" != "<<glocal_count[i];
-    //     diff_cnt+=1;
-    //   }
-    // }
-    // if (diff_cnt>0){
-    //   std::cout<<" diff found....."<<std::endl;
-    // }
-    auto t3 = std::chrono::high_resolution_clock::now();
-    timePartition=t1-t0;
-    timeUpdate=t2-t1;
-    timeReadOnly=t3-t2;
-    // record_.Counting.push_back(std::chrono::duration_cast<typename IMMExecutionRecord::ex_time_ms>(timePartition));
-    record_.Counting.push_back(std::chrono::duration_cast<typename IMMExecutionRecord::ex_time_ms>(timeUpdate));
-    // record_.Counting.push_back(std::chrono::duration_cast<typename IMMExecutionRecord::ex_time_ms>(timeReadOnly));
-
+      CountOccurrencies(begin_, itr, global_count_.begin(), global_count_.end(), num_threads_);
+    }
     end_ = itr;
-    // end_ = itrnew.end();
   }
 
   void ReduceCounters(size_t step) {
@@ -425,7 +361,6 @@ class CPUFindMostInfluentialWorker : public FindMostInfluentialWorker<GraphTy> {
   rrr_set_iterator end_;
   size_t num_threads_;
   uint32_t *d_cpu_counters_;
-  IMMExecutionRecord &record_;
 };
 
 template <typename GraphTy>
@@ -457,7 +392,7 @@ class StreamingFindMostInfluential {
 
  public:
   StreamingFindMostInfluential(const GraphTy &G, RRRsets<GraphTy> &RRRsets,
-                               size_t num_max_cpus, size_t num_gpus, IMMExecutionRecord &record)
+                               size_t num_max_cpus, size_t num_gpus)
       : num_cpu_workers_(num_max_cpus),
         num_gpu_workers_(num_gpus),
         workers_(),
@@ -466,8 +401,7 @@ class StreamingFindMostInfluential {
         d_counters_(num_gpus, 0),
         RRRsets_(RRRsets),
         reduction_steps_(1),
-        d_cpu_counters_(nullptr), 
-        record_(record){
+        d_cpu_counters_(nullptr){
 #ifdef RIPPLES_ENABLE_CUDA
     // Get Number of device and allocate 1 thread each.
     // num_gpu_workers_ = cuda_num_devices();
@@ -493,7 +427,7 @@ class StreamingFindMostInfluential {
 #endif
     workers_.push_back(new CPUFindMostInfluentialWorker<GraphTy>(
         vertex_coverage_, queue_storage_, RRRsets_.begin(), RRRsets_.end(),
-        num_cpu_workers_, d_cpu_counters_, record_));
+        num_cpu_workers_, d_cpu_counters_));
 #ifdef RIPPLES_ENABLE_CUDA
     if (num_gpu_workers_ == 0) return;
 
@@ -525,11 +459,11 @@ class StreamingFindMostInfluential {
     }
   }
 
-  void InitialCount(const std::string& hist) {
+  void InitialCount() {
 #pragma omp parallel num_threads(num_gpu_workers_ + 1)
     {
       size_t rank = omp_get_thread_num();
-      workers_[rank]->InitialCount(hist);
+      workers_[rank]->InitialCount();
     }
   }
 
@@ -550,11 +484,11 @@ class StreamingFindMostInfluential {
     }
   }
 
-  void UpdateCounters(vertex_type last_seed, const std::string& hist) {
+  void UpdateCounters(vertex_type last_seed) {
 #pragma omp parallel num_threads(num_gpu_workers_ + 1)
     {
       size_t rank = omp_get_thread_num();
-      workers_[rank]->UpdateCounters(last_seed,hist);
+      workers_[rank]->UpdateCounters(last_seed);
     }
   }
 
@@ -624,22 +558,16 @@ class StreamingFindMostInfluential {
     workers_[0]->set_first_rrr_set(indices[0].pivot);
   }
 
-  auto find_most_influential_set(size_t k, const std::string& histogramMode) {
+  auto find_most_influential_set(size_t k) {
+    using ex_time_ms = std::chrono::duration<double, std::milli>;
+    ex_time_ms elapse;
     omp_set_max_active_levels(2);
 
     LoadDataToDevice();
 
-    std::chrono::duration<double, std::milli> initCounter(0);
-    std::chrono::duration<double, std::milli> getQueue(0);
-
-    auto t0 = std::chrono::high_resolution_clock::now();
-    InitialCount(histogramMode);
-    auto t1 = std::chrono::high_resolution_clock::now();
-    initCounter=t1-t0;
+    InitialCount();
 
     auto queue = getHeap();
-    auto t2 = std::chrono::high_resolution_clock::now();
-    getQueue=t2-t1;
 
     std::vector<vertex_type> result;
     result.reserve(k);
@@ -648,36 +576,25 @@ class StreamingFindMostInfluential {
 
 
     std::chrono::duration<double, std::milli> seedSelection(0);
-    std::chrono::duration<double, std::milli> updateCounter(0);
     while (uncovered != 0) {
-      iters++;
-
       auto t0_ = std::chrono::high_resolution_clock::now();
       auto element = getNextSeed(queue);
       auto t1_ = std::chrono::high_resolution_clock::now();
-      // std::cout<<" pop-q:"<<element.first<<"\t"<<element.second<<""<<std::endl;
+
       seedSelection += t1_ - t0_;
 
       uncovered -= element.second;
-      // std::cout<<"se:"<<element.first<<"/"<<element.second<<"total:"<<RRRsets_.size()<<"-uncoverd:"<<uncovered<<std::endl;
       result.push_back(element.first);
 
       if (result.size() == k) break;
 
-      UpdateCounters(element.first,histogramMode);
-
+      UpdateCounters(element.first);
       auto t2_ = std::chrono::high_resolution_clock::now();
-      updateCounter += t2_ - t1_;
+      elapse += t2_ - t0_;
 
     }
 
     double f = double(RRRsets_.size() - uncovered) / RRRsets_.size();
-
-    record_.Iters.push_back(iters);
-    // record_.Counting.push_back(std::chrono::duration_cast<typename IMMExecutionRecord::ex_time_ms>(t1-t0));
-    // record_.Counting.push_back(std::chrono::duration_cast<typename IMMExecutionRecord::ex_time_ms>(t2-t1));
-    // record_.Counting.push_back(std::chrono::duration_cast<typename IMMExecutionRecord::ex_time_ms>(seedSelection));
-    // record_.Counting.push_back(std::chrono::duration_cast<typename IMMExecutionRecord::ex_time_ms>(updateCounter));
 
     omp_set_max_active_levels(1);
 
@@ -693,7 +610,6 @@ class StreamingFindMostInfluential {
   uint32_t *d_cpu_counters_;
   std::vector<uint32_t> vertex_coverage_;
   std::vector<std::pair<vertex_type, size_t>> queue_storage_;
-  IMMExecutionRecord &record_;
 };
 
 }  // namespace ripples

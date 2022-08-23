@@ -97,13 +97,6 @@ node new_node(HuffmanTree* huffmanTree, size_t freq, unsigned int c, node a, nod
 	return n;
 }
  
-node new_node2(HuffmanTree *huffmanTree, unsigned int c, unsigned char t)
-{
-	huffmanTree->pool[huffmanTree->n_nodes].c = c;
-	huffmanTree->pool[huffmanTree->n_nodes].t = t;
-	return huffmanTree->pool + huffmanTree->n_nodes++;
-} 
- 
 /* priority queue */
 void qinsert(HuffmanTree *huffmanTree, node n)
 {
@@ -226,6 +219,7 @@ void initByRRRSets3(HuffmanTree* huffmanTree, std::vector<RRRset> &RRRsets) {
 		
 	free(freq);
 }
+
 template <typename InItr, typename vertex_type>
 void printRR(InItr in_begin, size_t length, unsigned char* out, vertex_type* cpy){
 	size_t i;
@@ -235,11 +229,10 @@ void printRR(InItr in_begin, size_t length, unsigned char* out, vertex_type* cpy
 	}
 }
 
-
 template <typename InItr, typename vertex_type>
 void encodeRR22(const HuffmanTree *huffmanTree, InItr in_begin, size_t length, 
 		unsigned char* out, size_t *encodeSize, size_t *code_cnt,
-		vertex_type* cpy, size_t *copy_cnt, vertex_type* maxvtx, const std::string& lossyFlag){
+		vertex_type* cpy, size_t *copy_cnt, vertex_type* maxvtx){
 	size_t i = 0, j=0;
 	unsigned char bitSize = 0, byteSize, byteSizep;
 	uint32_t state;
@@ -336,10 +329,8 @@ void encodeRR22(const HuffmanTree *huffmanTree, InItr in_begin, size_t length,
 		}
 		else{
 			*copy_cnt+=1;
-			if(lossyFlag=="N"){
-				cpy[j]=state;
-	      		j++;
-	      	}	
+			cpy[j]=state;
+      		j++;
 		}	
 	}
 }
@@ -348,11 +339,11 @@ void encodeRR22(const HuffmanTree *huffmanTree, InItr in_begin, size_t length,
 template <typename vertex_type, typename RRRset>
 void encodeRRRSets3(const HuffmanTree* huffmanTree, std::vector<RRRset> &RRRsets, const int blockoffset,
 	std::vector<unsigned char*> &compR,	std::vector<uint32_t> &compBytes, std::vector<uint32_t> &codeCnt,
-	std::vector<vertex_type*> &copyR, std::vector<uint32_t> &copyCnt, std::vector<uint32_t> &globalcnt, vertex_type* maxvtx, const std::string& lossyFlag) {
+	std::vector<vertex_type*> &copyR, std::vector<uint32_t> &copyCnt, std::vector<uint32_t> &globalcnt, vertex_type* maxvtx) {
   	size_t s1 = RRRsets.size(); //i: current RR's index
   	std::cout<<"encode-rrrsets-3: huffman-maxv"<<huffmanTree->maxvtx<<"/ maxv="<<*maxvtx;
   	std::cout<<" s1="<<s1<<" block-offset="<<blockoffset;
-  	std::cout<<" input compR.size="<<compR.size()<<" lossy-flag="<<lossyFlag<< std::endl;
+  	std::cout<<" input compR.size="<<compR.size()<< std::endl;
   	bool flag_s2=0;
   	size_t total_rrr_size = 0;
   	size_t num_threads = omp_get_max_threads();
@@ -369,11 +360,9 @@ void encodeRRRSets3(const HuffmanTree* huffmanTree, std::vector<RRRset> &RRRsets
         size_t s2=std::distance(in_begin->begin(),in_begin->end());
         tmp_encode = (unsigned char*)malloc(s2*sizeof(unsigned long));
         memset(tmp_encode,0,s2*sizeof(unsigned long));
-        if(lossyFlag=="N"){
-	        tmp_encopy = (vertex_type*)malloc(s2*sizeof(vertex_type));
-	        memset(tmp_encopy,0,s2*sizeof(vertex_type));
-	    }
-        encodeRR22(huffmanTree, in_begin, s2, tmp_encode, &encodeSize, &code_cnt, tmp_encopy, &copy_cnt, maxvtx, lossyFlag);
+        tmp_encopy = (vertex_type*)malloc(s2*sizeof(vertex_type));
+        memset(tmp_encopy,0,s2*sizeof(vertex_type));
+        encodeRR22(huffmanTree, in_begin, s2, tmp_encode, &encodeSize, &code_cnt, tmp_encopy, &copy_cnt, maxvtx);
         if(encodeSize>=1){
             compR[i] = (unsigned char*)malloc(encodeSize*sizeof(unsigned char));
             memset(compR[i],0,encodeSize*sizeof(unsigned char));
@@ -381,16 +370,14 @@ void encodeRRRSets3(const HuffmanTree* huffmanTree, std::vector<RRRset> &RRRsets
         }
         compBytes[i]=encodeSize;
         codeCnt[i]=code_cnt;
-        if((copy_cnt>=1)&&(lossyFlag=="N")){
+        if(copy_cnt>=1){
             copyR[i] = (vertex_type*)malloc(copy_cnt*sizeof(vertex_type));
             memset(copyR[i],0,copy_cnt*sizeof(vertex_type));
         	memcpy(copyR[i], tmp_encopy, copy_cnt*sizeof(vertex_type)); 
         }
         copyCnt[i]=copy_cnt;
 		free(tmp_encode); 
-		if(lossyFlag=="N"){       
-	        free(tmp_encopy);
-	    }
+        free(tmp_encopy);
         (*in_begin).clear();	//# check why block+compress is faster than original sampling
         (*in_begin).shrink_to_fit(); //# check why block+compress is faster than original sampling
         block_code_sum += codeCnt[i];
@@ -401,38 +388,6 @@ void encodeRRRSets3(const HuffmanTree* huffmanTree, std::vector<RRRset> &RRRsets
 	std::cout<<" copy="<<block_copy_sum<<" total=" <<total_rrr_size<<std::endl;
 }
 
-template <typename vertex_type>
-void decode(unsigned char *s, size_t targetLength, node t, vertex_type *out)
-{
-	size_t i = 0, byteIndex = 0, count = 0;
-	int r; 
-	node n = t;
-	if(n->t) //root->t==1 means that all state values are the same (constant)
-	{
-		for(count=0;count<targetLength;count++)
-			out[count] = n->c;
-		return;
-	}
-	
-	for(i=0;count<targetLength;i++)
-	{
-		
-		byteIndex = i>>3; //i/8
-		r = i%8;
-		if(((s[byteIndex] >> (7-r)) & 0x01) == 0)
-			n = n->left;
-		else
-			n = n->right;
-
-		if (n->t) {
-			out[count] = n->c;
-			n = t; 
-			count++;
-		}
-	}
-	// if (t != n) printf("garbage input\n");
-	return;
-}
 
 template <typename vertex_type>
 void decodeCheck(const unsigned char *s, const size_t targetLength, node t, vertex_type *out, const vertex_type  target, bool* find_flag)
@@ -473,6 +428,7 @@ void decodeCheck(const unsigned char *s, const size_t targetLength, node t, vert
 	return;
 }
 
+
 template <typename vertex_type>
 vertex_type DecompAndFind4(const HuffmanTree* huffmanTree, const uint32_t tot_nodes,
                   const std::vector<unsigned char*> &compR, const std::vector<uint32_t> &codeCnt,
@@ -480,18 +436,23 @@ vertex_type DecompAndFind4(const HuffmanTree* huffmanTree, const uint32_t tot_no
                   std::vector<bool> &deleteflag,
                   const uint32_t s1, const vertex_type maxvtx, size_t *freq,
                   IMMExecutionRecord &record, 
-                  omp_parallel_tag &&ex_tag, const std::string& lossyFlag, int release_flag) {
+                  omp_parallel_tag &&ex_tag, int release_flag) {
+	// std::cout<<" >>>>>>>> mv="<<maxvtx<<" ===== "<<std::endl;
 	*freq=0;
 	size_t num_threads = omp_get_max_threads();
 	size_t local_freq=0;
 	int* globalcnt=(int*)malloc(tot_nodes*sizeof(int));
 	memset(globalcnt, 0, tot_nodes*sizeof(int));
+	
+	size_t idx_array[num_threads]={0};
+	size_t workload[num_threads]={0};
 #pragma omp parallel num_threads(num_threads) proc_bind(spread) shared(deleteflag,globalcnt)//private(localcnt)//shared(deleteflag)
 {
     int* localcnt=(int*)malloc(tot_nodes*sizeof(int));
     for(int ii=0;ii<tot_nodes;ii++){
         localcnt[ii]=0;
     }
+    size_t local_workload = 0;
 #pragma omp for schedule(static) reduction(+:local_freq) 
     // parallel num_threads(num_threads) proc_bind(spread)  schedule(static)  shared(deleteflag) reduction(+:local_freq)
     for(size_t i=0;i<s1;i++){
@@ -510,25 +471,21 @@ vertex_type DecompAndFind4(const HuffmanTree* huffmanTree, const uint32_t tot_no
         		local_freq+=1;
         	}
         	else{
-        		if(lossyFlag=="N"){
-        			for(int j=0;j<copyCnt[i];j++){
-        				if(copyR[i][j]==maxvtx){
-        					local_freq+=1;
-        					find_flag=1;
-        					break;
-        				}
-        			}
-        		}	
+    			for(int j=0;j<copyCnt[i];j++){
+    				if(copyR[i][j]==maxvtx){
+    					local_freq+=1;
+    					find_flag=1;
+    					break;
+    				}
+    			}
         	}
         	if(find_flag==0){
         		for(int j=0;j<codeCnt[i];j++){
                     localcnt[decodes[j]]+=1;
         		}
-        		if(lossyFlag=="N"){
-        			for(int j=0;j<copyCnt[i];j++){
-        				localcnt[copyR[i][j]]+=1;
-        			}
-        		}	
+    			for(int j=0;j<copyCnt[i];j++){
+    				localcnt[copyR[i][j]]+=1;
+    			}
         	}
             else{
         	    deleteflag[i]=1;
@@ -540,19 +497,32 @@ vertex_type DecompAndFind4(const HuffmanTree* huffmanTree, const uint32_t tot_no
     }
     int local_vtx=0, local_max=0;
     for(int ii=0;ii<tot_nodes;ii++){
+    	local_workload+=localcnt[ii];
         if(localcnt[ii]>local_max)  {
           local_max=localcnt[ii];
           local_vtx=ii;
         }
     }
-#pragma omp critical
+    int rank = omp_get_thread_num();
+    idx_array[rank]=local_vtx;
+    workload[rank]=local_workload;
+    #pragma omp barrier
+    
+	#pragma omp critical
     {	
-    	int threadnum = omp_get_thread_num(); 
-		// std::cout<<" ("<<threadnum<<") vtx="<<local_vtx<<" freq="<<local_max<<std::endl;
-		globalcnt[local_vtx]+=local_max;
+		std::set<size_t> local_idx_set;
+		size_t tmp_key = 0;
+		for(int ii=0;ii<num_threads;ii++){
+			tmp_key = idx_array[ii];
+			if(local_idx_set.find(tmp_key)==local_idx_set.end()){
+				local_idx_set.insert(tmp_key);
+				globalcnt[tmp_key]+=localcnt[tmp_key];
+			}
+		}
     }    
     free(localcnt); 
 }
+
     uint32_t tmpmax=0;
     vertex_type nxtmax=0;
     for(int i=0;i<tot_nodes;i++){
@@ -563,7 +533,6 @@ vertex_type DecompAndFind4(const HuffmanTree* huffmanTree, const uint32_t tot_no
     }
     free(globalcnt);
     *freq=local_freq;
-    std::cout<<","<<nxtmax<<" ";
     return nxtmax;
 }
 
@@ -586,8 +555,6 @@ void SZ_ReleaseHuffman(HuffmanTree* huffmanTree)
   free(huffmanTree);
   huffmanTree = NULL;
 }
-
-
 
 } //// namespace ripples
 #endif //RIPPLES_HUFFMAN_H

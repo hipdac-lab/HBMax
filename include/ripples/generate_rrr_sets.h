@@ -91,15 +91,125 @@ using RRRsets = std::vector<RRRset<GraphTy>>;
 //! \param generator The pseudo random number generator.
 //! \param result The RRR set
 //! \param tag The diffusion model tag.
+template <typename GraphTy, typename RRRset>
+size_t CheckRRRSize(const GraphTy &G, std::vector<RRRset> &RRRsets) {
+  using vertex_type = typename GraphTy::vertex_type;
+  auto in_begin=RRRsets.begin();
+  auto in_end=RRRsets.end();
+  size_t s1 = RRRsets.size();
+  size_t total_rrr_size = 0;
+  size_t mem_usage = 0;
+  for (; in_begin != in_end; ++in_begin) {
+    int s2=std::distance(in_begin->begin(),in_begin->end());
+    total_rrr_size+=s2;
+  }
+  mem_usage = total_rrr_size * sizeof(vertex_type) / (1024 * 1024); // in MB
+  return mem_usage;
+}
+
+template <typename GraphTy, typename RRRset>
+void DumpRRRSets(const GraphTy &G, std::vector<RRRset> &RRRsets, size_t offset) {
+  using vertex_type = typename GraphTy::vertex_type;
+  auto in_begin=RRRsets.begin()+offset;
+  auto in_end=RRRsets.end();
+  size_t s1 = RRRsets.size()-offset;
+  size_t total_rrr_size = 0;
+  std::ofstream FILE("rrr_out.bin", std::ios::out | std::ofstream::binary);
+  FILE.write(reinterpret_cast<const char *>(&s1), sizeof(s1));
+  for (; in_begin != in_end; ++in_begin) {
+    int s2=std::distance(in_begin->begin(),in_begin->end());
+    total_rrr_size+=s2;
+    FILE.write(reinterpret_cast<const char *>(&s2), sizeof(s2));
+    FILE.write(reinterpret_cast<const char *> (&(*in_begin->begin())), s2*sizeof(vertex_type));
+  }
+  std::cout<<"write-external-rrr="<<s1<<", total-vtx-size="<<total_rrr_size;
+  std::cout<<", total-bytes:"<<(total_rrr_size * sizeof(vertex_type))/(1024*1024)<<"MB."<<std::endl;
+}
+
+template <typename GraphTy>
+void ReadRRRSets(const GraphTy &G) {
+  using vertex_type = typename GraphTy::vertex_type;
+  // auto in_begin=RRRsets.begin();
+  // auto in_end=RRRsets.end();
+  // size_t s1 = RRRsets.size();
+  size_t s1 = 0;
+  size_t total_rrr_size = 0;
+  std::vector<vertex_type> tmp_A;
+  vertex_type tmp_a;
+  std::ifstream FILE("rrr_out.bin", std::ios::in | std::ofstream::binary);
+  FILE.read(reinterpret_cast<char *>(&s1), sizeof(s1));
+  for (int i=0; i<s1; i++) {
+    int s2=0;
+    FILE.read(reinterpret_cast<char *>(&s2), sizeof(s2));
+    total_rrr_size+=s2;
+    tmp_A.resize(s2);
+    for(int j=0;j<s2;j++){
+        FILE.read(reinterpret_cast<char *> (&tmp_a), sizeof(vertex_type));
+        tmp_A.push_back(tmp_a);
+    }
+  }
+  std::cout<<"read-external-rrr="<<s1<<", total-vtx-size="<<total_rrr_size;
+  std::cout<<", total-bytes:"<<(total_rrr_size * sizeof(vertex_type))/(1024*1024)<<"Mb."<<std::endl;
+  // return tmp_A;
+}
+
 template <typename GraphTy, typename PRNGeneratorTy, typename diff_model_tag>
 void AddRRRSet(const GraphTy &G, typename GraphTy::vertex_type r,
                PRNGeneratorTy &generator, RRRset<GraphTy> &result,
-               diff_model_tag &&tag, const std::string& sortFlag) {
+               diff_model_tag &&tag) {
   using vertex_type = typename GraphTy::vertex_type;
 
   trng::uniform01_dist<float> value;
 
-  // std::queue<vertex_type> queue;
+  std::queue<vertex_type> queue;
+  std::vector<bool> visited(G.num_nodes(), false);
+
+  queue.push(r);
+  visited[r] = true;
+  result.push_back(r);
+
+  while (!queue.empty()) {
+    vertex_type v = queue.front();
+    queue.pop();
+
+    if (std::is_same<diff_model_tag, ripples::independent_cascade_tag>::value) {
+      for (auto u : G.neighbors(v)) {
+        if (!visited[u.vertex] && value(generator) <= u.weight) {
+          queue.push(u.vertex);
+          visited[u.vertex] = true;
+          result.push_back(u.vertex);
+        }
+      }
+    } else if (std::is_same<diff_model_tag,
+                            ripples::linear_threshold_tag>::value) {
+      float threshold = value(generator);
+      for (auto u : G.neighbors(v)) {
+        threshold -= u.weight;
+
+        if (threshold > 0) continue;
+
+        if (!visited[u.vertex]) {
+          queue.push(u.vertex);
+          visited[u.vertex] = true;
+          result.push_back(u.vertex);
+        }
+        break;
+      }
+    } else {
+      throw;
+    }
+  }
+  std::stable_sort(result.begin(), result.end());
+}
+
+template <typename GraphTy, typename PRNGeneratorTy, typename diff_model_tag>
+void AddRRRSet2(const GraphTy &G, typename GraphTy::vertex_type r,
+               PRNGeneratorTy &generator, RRRset<GraphTy> &result,
+               diff_model_tag &&tag) {
+  using vertex_type = typename GraphTy::vertex_type;
+
+  trng::uniform01_dist<float> value;
+
   std::deque<vertex_type> queue;
   std::vector<bool> visited(G.num_nodes(), false);
   double vm1,vm2;
@@ -140,10 +250,6 @@ void AddRRRSet(const GraphTy &G, typename GraphTy::vertex_type r,
   result.shrink_to_fit(); // try collect memory 
   std::deque<vertex_type>().swap(queue);
   std::vector<bool>().swap(visited);
-  if (sortFlag=="Y"){
-    std::stable_sort(result.begin(), result.end()); 
-  }
-  // std::cout<<"@addrrr:"<<result.size()<<std::endl; ## remove small RRs, |RR|<=10
 }
 
 //! \brief Generate Random Reverse Reachability Sets - sequential.
@@ -167,14 +273,30 @@ void GenerateRRRSets(GraphTy &G, PRNGeneratorTy &generator,
                      ItrTy begin, ItrTy end,
                      ExecRecordTy &,
                      diff_model_tag &&model_tag,
-                     sequential_tag &&ex_tag,
-                     const std::string& sortFlag) {
+                     sequential_tag &&ex_tag) {
+  trng::uniform_int_dist start(0, G.num_nodes());
+
+  for (auto itr = begin; itr < end; ++itr) {
+    typename GraphTy::vertex_type r = start(generator[0]);
+    AddRRRSet(G, r, generator[0], *itr,
+              std::forward<diff_model_tag>(model_tag));
+  }
+}
+
+template <typename GraphTy, typename PRNGeneratorTy,
+          typename ItrTy, typename ExecRecordTy,
+          typename diff_model_tag>
+void GenerateRRRSets2(GraphTy &G, PRNGeneratorTy &generator,
+                     ItrTy begin, ItrTy end,
+                     ExecRecordTy &,
+                     diff_model_tag &&model_tag,
+                     sequential_tag &&ex_tag) {
   trng::uniform_int_dist start(0, G.num_nodes());
   
   for (auto itr = begin; itr < end; ++itr) {
     typename GraphTy::vertex_type r = start(generator[0]);
-    AddRRRSet(G, r, generator[0], *itr,
-              std::forward<diff_model_tag>(model_tag),sortFlag);
+    AddRRRSet2(G, r, generator[0], *itr,
+              std::forward<diff_model_tag>(model_tag));
   }
 }
 
@@ -200,9 +322,8 @@ void GenerateRRRSets(const GraphTy &G,
                      ItrTy begin, ItrTy end,
                      ExecRecordTy &,
                      diff_model_tag &&,
-                     omp_parallel_tag &&,
-                     const std::string& sortFlag) {
-  se.generate(begin, end, sortFlag);
+                     omp_parallel_tag &&) {
+  se.generate(begin, end);
 }
 
 template <typename GraphTy, typename PRNGeneratorTy,
@@ -214,9 +335,8 @@ void GenerateRRRSets2(const GraphTy &G,
                      ExecRecordTy &,
                      diff_model_tag &&,
                      omp_parallel_tag &&,
-                     std::vector<uint32_t> &globalcnt, vertex_type* maxvtx,
-                     const std::string& sortFlag, int extra_flag, int rthd) {
-  se.generate2(begin, end, globalcnt, maxvtx, sortFlag, extra_flag, rthd);
+                     std::vector<uint32_t> &globalcnt, vertex_type* maxvtx) {
+  se.generate2(begin, end, globalcnt, maxvtx);
 }
 
 }  // namespace ripples

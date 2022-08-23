@@ -4,6 +4,10 @@
 build/
 /.waf*
 *~
+conan.lock
+conan*.txt
+graph_info.json
+waf_conan_libs_info.py
 
 docs/api
 

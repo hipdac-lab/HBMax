@@ -188,7 +188,7 @@ int main(int argc, char **argv) {
           se(G, generator, R, workers - gpu_workers, gpu_workers,
              CFG.worker_to_gpu);
       auto start = std::chrono::high_resolution_clock::now();
-      seeds = IMM(G, CFG, 1, se, ripples::independent_cascade_tag{},
+      seeds = IMM3(G, CFG, 1, se, ripples::independent_cascade_tag{},
                   ripples::omp_parallel_tag{});
       auto end = std::chrono::high_resolution_clock::now();
       R.Total = end - start - R.Total;
@@ -201,7 +201,7 @@ int main(int argc, char **argv) {
           se(G, generator, R, workers - gpu_workers, gpu_workers,
              CFG.worker_to_gpu);
       auto start = std::chrono::high_resolution_clock::now();
-      seeds = IMM(G, CFG, 1, se, ripples::linear_threshold_tag{},
+      seeds = IMM3(G, CFG, 1, se, ripples::linear_threshold_tag{},
                   ripples::omp_parallel_tag{});
       auto end = std::chrono::high_resolution_clock::now();
       R.Total = end - start - R.Total;

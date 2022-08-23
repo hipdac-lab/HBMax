@@ -35,7 +35,8 @@
 
 
 def build(bld):
-    tools_deps = ['project-headers', 'spdlog', 'fmt',
+    # tools_deps = ['project-headers', 'spdlog', 'fmt',
+    tools_deps = ['project-headers', 
                   'libtrng', 'OpenMP', 'nlohmann_json', 'cli11']
 
     cuda_acc_tools_deps = tools_deps

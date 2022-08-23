@@ -133,11 +133,8 @@ struct AlgorithmConfiguration {
   size_t k{10};                      //!< The size of the seedset
   bool parallel{false};              //!< The sequential vs parallel algorithm
   std::string diffusionModel{"IC"};  //!< The diffusion model to use.
-  std::string histogramMode{"LH"};  //!< The histogram mode to use. LH:low-high RD:Reduce
-  std::string sortFlag{"N"};  //!< The flag to sort RRs. Y:yes N:No
-  std::string lossyFlag{"N"};  //!< The flag of lossy compress RRs. Y:yes N:No
-  int q{4};                      //!< The number of the sampling blocks
-  int rthd{1};                      //!< The number of the sampling blocks
+  size_t memlimit{999999};
+  int q{1};                      //!< The number of the sampling blocks
   //! \brief Add command line options to configure TIM+.
   //!
   //! \param app The command-line parser object.
@@ -152,23 +149,11 @@ struct AlgorithmConfiguration {
                    "The diffusion model to use (LT|IC)")
         ->required()
         ->group("Algorithm Options");
-    app.add_option("-b,--histogram-mode", histogramMode,
-                   "The histogram mode to use (LH|RD)")
-        // ->required()
-        ->group("Algorithm Options");
-    app.add_option("-s,--sort-flag", sortFlag,
-                   "The flag to sort RRs (Y|N)")
-        // ->required()
-        ->group("Algorithm Options");
+    app.add_option("-m,--mem-limit", memlimit,
+                   "The mem-limit to use xxx Mb")
+        ->group("Algorithm Options");    
     app.add_option("-q,--gen-blocks", q, "The number of blocks.")
-        ->required()
         ->group("Algorithm Options");
-    app.add_option("-l,--lossy-flag", lossyFlag,
-                   "The flag to lossy compress (Y|N)")
-        ->group("Algorithm Options");
-    app.add_option("-r,--sample-threshold", rthd,
-                   "The sampling threshold")
-        ->group("Algorithm Options");                    
   }
 };
 
